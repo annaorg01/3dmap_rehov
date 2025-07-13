@@ -1,0 +1,304 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+  <meta charset="UTF-8" />
+  <title>3D ITM Map with Waze Tiles</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <script src="https://unpkg.com/proj4@2.8.0/dist/proj4.js"></script>
+  <script src="https://unpkg.com/maplibre-gl@2.4.0/dist/maplibre-gl.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@turf/turf@6/turf.min.js"></script>
+  <link href="https://unpkg.com/maplibre-gl@2.4.0/dist/maplibre-gl.css" rel="stylesheet" />
+  <style>
+    body, html { margin: 0; height: 100%; font-family: sans-serif; direction: rtl; }
+    #map { width: 100vw; height: 100vh; }
+    .popup {
+      font-family: Arial, sans-serif;
+      font-size: 14px;
+      padding: 10px;
+      border-radius: 8px;
+      background-color: #ffffff;
+      color: #333;
+      box-shadow: 0 2px 10px rgba(0, 0, 0, 0.3);
+      max-width: 400px;
+    }
+    .popup strong {
+      color: #0074D9;
+      font-size: 16px;
+    }
+    .popup table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+    .popup td {
+      padding: 4px;
+      vertical-align: top;
+    }
+    .popup tr:nth-child(odd) {
+      background-color: #f7f7f7;
+    }
+    #legend {
+      position: absolute;
+      top: 10px;
+      left: 10px;
+      background: #fff;
+      padding: 10px;
+      border-radius: 8px;
+      box-shadow: 0 0 5px rgba(0,0,0,0.2);
+      font-size: 14px;
+      z-index: 999;
+    }
+    #side-popup {
+      position: absolute;
+      top: 0;
+      right: 0;
+      width: 30vw;
+      height: 100vh;
+      background: #fff;
+      border-left: 1px solid #ccc;
+      box-shadow: -2px 0 8px rgba(0, 0, 0, 0.2);
+      padding: 15px;
+      overflow-y: auto;
+      z-index: 999;
+      display: none;
+      direction: rtl;
+      text-align: right;
+    }
+    #streetview {
+      width: 100%;
+      height: 400px;
+      margin-top: 10px;
+      border: none;
+      border-radius: 8px;
+    }
+    .info-card {
+      background: #f9f9f9;
+      margin-bottom: 10px;
+      padding: 10px;
+      border-radius: 6px;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.1);
+    }
+    .info-card strong {
+      display: block;
+      color: #333;
+      margin-bottom: 5px;
+    }
+    .field-group {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-bottom: 10px;
+    }
+    .field-group .info-card {
+      flex: 1 1 calc(33.333% - 10px);
+      position: relative;
+    }
+    .bubble {
+      position: absolute;
+      top: -10px;
+      right: -10px;
+      background-color: #ffc107;
+      color: #000;
+      padding: 2px 6px;
+      border-radius: 10px;
+      font-size: 10px;
+      white-space: nowrap;
+    }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+  <div id="legend">
+    <strong>מקרא מצב מבנים:</strong><br>
+    <span style="color:#28a745;">■</span> 1 - לא מסוכן<br>
+    <span style="color:#ffc107;">■</span> 2 - אין לאכלס<br>
+    <span style="color:#dc3545;">■</span> 3 - מבנה מסוכן<br>
+    <span style="color:#6c757d;">■</span> 4 - להריסה<br>
+    <span style="color:#0074D9;">■</span> לא ידוע
+  </div>
+  <div id="side-popup"></div>
+
+  <script>
+    proj4.defs("EPSG:2039", "+proj=tmerc +lat_0=31.73439361111111 +lon_0=35.20451694444445 +k=1.0000067 +x_0=219529.584 +y_0=626907.39 +ellps=GRS80 +units=m +no_defs");
+
+    const statusByAddress = { };
+    const randomPalette = ['#dc3545', '#28a745', '#ffc107', '#ff8800'];
+
+    const statusColor = status => randomPalette[Math.floor(Math.random() * randomPalette.length)];
+
+    const matchAddress = (address) => {
+      const cleaned = address?.replace(/\s+/g, '').trim() || '';
+      for (let key in statusByAddress) {
+        if (cleaned.includes(key.replace(/\s+/g, ''))) {
+          return statusByAddress[key];
+        }
+      }
+      return 'לא ידוע';
+    };
+
+    const map = new maplibregl.Map({
+      container: 'map',
+      style: {
+        version: 8,
+        sources: {
+          "waze": {
+            type: "raster",
+            tiles: ["https://il-livemap-tiles3.waze.com/tiles/{z}/{x}/{y}.png"],
+            tileSize: 256,
+            attribution: "&copy; Waze"
+          }
+        },
+        layers: [{ id: "waze", type: "raster", source: "waze" }]
+      },
+      center: [34.812, 31.894],
+      zoom: 16,
+      pitch: 45,
+      bearing: -10,
+      antialias: true
+    });
+
+    let selectedId = null;
+
+    map.on('load', () => {
+      fetch('area1.geojson')
+        .then(res => res.json())
+        .then(geojson => {
+          const converted = convertCoordsITMtoWGS84(geojson);
+          renderBuildings(converted);
+        });
+    });
+
+    function convertCoordsITMtoWGS84(geojson) {
+      const converted = JSON.parse(JSON.stringify(geojson));
+      converted.features = converted.features.map(f => {
+        f.geometry.coordinates = traverse(f.geometry.coordinates);
+        return f;
+      });
+      return converted;
+
+      function traverse(coords) {
+        if (typeof coords[0] === 'number') {
+          return proj4('EPSG:2039', 'WGS84', coords);
+        } else {
+          return coords.map(traverse);
+        }
+      }
+    }
+
+    function renderBuildings(data) {
+      data.features = data.features.filter(f => ['Polygon', 'MultiPolygon'].includes(f.geometry.type));
+      data.features.forEach((f, i) => {
+        const addr = f.properties.address || f.properties.name || '';
+        const status = matchAddress(addr);
+        f.properties.status = status;
+        f.properties.color = statusColor(status);
+        f.properties.id = i;
+        f.properties.height = parseFloat(f.properties.height || f.properties.ground_height || 10);
+      });
+
+      map.addSource('buildings', { type: 'geojson', data });
+
+      map.addLayer({
+        id: 'building-extrusion',
+        type: 'fill-extrusion',
+        source: 'buildings',
+        paint: {
+          'fill-extrusion-color': ['get', 'color'],
+          'fill-extrusion-height': ['get', 'height'],
+          'fill-extrusion-base': 0,
+          'fill-extrusion-opacity': 0.85
+        }
+      });
+
+      map.addLayer({
+        id: 'building-outline',
+        type: 'line',
+        source: 'buildings',
+        paint: {
+          'line-color': '#000',
+          'line-width': 1.5
+        }
+      });
+
+      map.addLayer({
+        id: 'selected-building',
+        type: 'fill-extrusion',
+        source: 'buildings',
+        paint: {
+          'fill-extrusion-color': '#ffff00',
+          'fill-extrusion-height': ['get', 'HEIGHT'],
+          'fill-extrusion-base': 0,
+          'fill-extrusion-opacity': 1.0
+        },
+        filter: ['==', 'id', -1]
+      });
+
+      map.on('click', 'building-extrusion', (e) => {
+        const f = e.features[0];
+        const p = f.properties;
+        selectedId = p.id;
+        map.setFilter('selected-building', ['==', 'id', selectedId]);
+
+        const center = turf.center(f);
+        const [lng, lat] = center.geometry.coordinates;
+
+        localStorage.setItem('lastClickedJoin', `${lat},${lng}`);
+
+        const headers = Object.keys(p).map(k => `<div class="info-card"><strong>${k}</strong>${p[k]}</div>`);
+
+        const fields = [
+          { name: 'רחוב', value: p.STREET || '—', bubble: true },
+          { name: 'מספר בית', value: p.BLDG_NUM || '—', bubble: true },
+          { name: 'דרגה נוכחית', value: p.status || '—', bubble: true },
+          { name: 'בדיקת מס רכוש', value: '—', bubble: true },
+          { name: 'מהנדס שבדק', value: 'פיקוח', bubble: true },
+          { name: 'הערות', value: '—', bubble: true },
+          { name: 'נשלח מכתב מבנה לא מסוכן', value: 'כן', bubble: true },
+          { name: 'סטטוס', value: '1-ניתן לאיכלוס', bubble: true },
+          { name: 'דרגה ראשונית', value: p.status || '—', bubble: true },
+          { name: 'כתובת api', value: p.address || p.name || '—', bubble: true },
+          { name: 'lat', value: lat, bubble: false },
+          { name: 'lon', value: lng, bubble: false },
+          { name: 'join', value: `${lat},${lng}`, bubble: false },
+          { name: 'floors', value: p.floors || '—', bubble: false },
+          { name: 'appartments', value: p.appartments || '—', bubble: false },
+          { name: 'residents', value: p.residents || '—', bubble: false }
+        ];
+
+        const html = `
+          <h2>${p.STREET || ''} ${p.BLDG_NUM || ''}</h2>
+          <div class="field-group">${headers.join('')}</div>
+          ${fields.map(f => `
+            <div class="info-card">
+              <strong>${f.name}</strong>
+              ${f.value}
+              ${f.bubble ? '<div class="bubble">הערות אגף הנדסה</div>' : ''}
+            </div>
+          `).join('')}
+          <iframe
+            id="streetview"
+            src="https://www.google.com/maps?q=&layer=c&cbll=${lat},${lng}&cbp=12,${map.getBearing()},0,0,0&output=svembed"
+            allowfullscreen
+          ></iframe>
+        `;
+
+        const sidePopup = document.getElementById('side-popup');
+        sidePopup.innerHTML = html;
+        sidePopup.style.display = 'block';
+      });
+
+      map.on('mouseenter', 'building-extrusion', () => map.getCanvas().style.cursor = 'pointer');
+      map.on('mouseleave', 'building-extrusion', () => map.getCanvas().style.cursor = '');
+
+      map.on('click', (e) => {
+        const features = map.queryRenderedFeatures(e.point, {
+          layers: ['building-extrusion']
+        });
+        if (!features.length) {
+          document.getElementById('side-popup').style.display = 'none';
+          map.setFilter('selected-building', ['==', 'id', -1]);
+        }
+      });
+    }
+  </script>
+</body>
+</html>
