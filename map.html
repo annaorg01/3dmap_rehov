@@ -7,14 +7,15 @@
   <script src="https://unpkg.com/proj4@2.8.0/dist/proj4.js"></script>
   <script src="https://unpkg.com/maplibre-gl@2.4.0/dist/maplibre-gl.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@turf/turf@6/turf.min.js"></script>
+  <script src="https://unpkg.com/papaparse@5.3.0/papaparse.min.js"></script>
   <link href="https://unpkg.com/maplibre-gl@2.4.0/dist/maplibre-gl.css" rel="stylesheet" />
   <style>
     body, html { margin: 0; height: 100%; font-family: sans-serif; direction: rtl; }
     #map { width: 100vw; height: 100vh; }
     .popup {
       font-family: Arial, sans-serif;
-      font-size: 14px;
-      padding: 10px;
+      font-size: 12px;
+      padding: 8px;
       border-radius: 8px;
       background-color: #ffffff;
       color: #333;
@@ -23,7 +24,7 @@
     }
     .popup strong {
       color: #0074D9;
-      font-size: 16px;
+      font-size: 12px;
     }
     .popup table {
       width: 100%;
@@ -51,17 +52,102 @@
       position: absolute;
       top: 0;
       right: 0;
-      width: 30vw;
+      width: 40vw;
       height: 100vh;
-      background: #fff;
+      background: #f0f2f5;
       border-left: 1px solid #ccc;
       box-shadow: -2px 0 8px rgba(0, 0, 0, 0.2);
-      padding: 15px;
+      padding: 20px;
       overflow-y: auto;
       z-index: 999;
       display: none;
       direction: rtl;
       text-align: right;
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    }
+    .card {
+      background: #fff;
+      border-radius: 8px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+      margin-bottom: 20px;
+      padding: 20px;
+    }
+    .card-header {
+      border-bottom: 1px solid #e8e8e8;
+      padding-bottom: 15px;
+      margin-bottom: 15px;
+    }
+    .card-header h2 {
+      margin: 0;
+      font-size: 24px;
+      color: #333;
+    }
+    .card-body {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+      gap: 15px;
+    }
+    .card-field {
+      background: #f9f9f9;
+      border-radius: 6px;
+      padding: 10px;
+      font-size: 14px;
+    }
+    .card-field strong {
+      display: block;
+      color: #555;
+      margin-bottom: 5px;
+      font-size: 12px;
+      text-transform: uppercase;
+    }
+    .pagination {
+      display: flex;
+      justify-content: center;
+      margin-top: 20px;
+    }
+    .pagination button {
+      background: #007bff;
+      color: #fff;
+      border: none;
+      border-radius: 4px;
+      padding: 8px 12px;
+      margin: 0 5px;
+      cursor: pointer;
+      transition: background 0.3s;
+    }
+    .pagination button:hover {
+      background: #0056b3;
+    }
+    .pagination button:disabled {
+      background: #ccc;
+      cursor: not-allowed;
+    }
+    .geojson-headers, .resident-data {
+      display: none;
+      margin-top: 20px;
+      border-top: 1px solid #e8e8e8;
+      padding-top: 20px;
+    }
+    .resident-table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 10px;
+      font-family: Arial, sans-serif;
+      font-size: 12px;
+      overflow-x: auto;
+      display: block;
+    }
+    .resident-table th, .resident-table td {
+      border: 1px solid #ddd;
+      padding: 6px;
+      text-align: right;
+    }
+    .resident-table th {
+      background-color: #f2f2f2;
+      color: #333;
+    }
+    .resident-table tr:nth-child(even) {
+      background-color: #f9f9f9;
     }
     #streetview {
       width: 100%;
@@ -72,15 +158,16 @@
     }
     .info-card {
       background: #f9f9f9;
-      margin-bottom: 10px;
-      padding: 10px;
+      margin-bottom: 8px;
+      padding: 8px;
       border-radius: 6px;
       box-shadow: 0 1px 4px rgba(0,0,0,0.1);
     }
     .info-card strong {
       display: block;
       color: #333;
-      margin-bottom: 5px;
+      margin-bottom: 2px;
+      font-size: 12px;
     }
     .field-group {
       display: flex;
@@ -121,9 +208,14 @@
     proj4.defs("EPSG:2039", "+proj=tmerc +lat_0=31.73439361111111 +lon_0=35.20451694444445 +k=1.0000067 +x_0=219529.584 +y_0=626907.39 +ellps=GRS80 +units=m +no_defs");
 
     const statusByAddress = { };
-    const randomPalette = ['#dc3545', '#28a745', '#ffc107', '#ff8800'];
+    const redBuildingIds = [4221, 4244, 4245, 4262, 4362, 4388, 4394, 4398, 4404, 4408, 4430, 4452, 4453, 4455, 4456, 4475, 4484, 4488, 4513, 4514, 6022, 7152, 7197, 9038];
 
-    const statusColor = status => randomPalette[Math.floor(Math.random() * randomPalette.length)];
+    const statusColor = (status, objectId) => {
+      if (redBuildingIds.includes(objectId)) {
+        return '#dc3545'; // Red
+      }
+      return 'rgba(255, 136, 0, 0.7)'; // Orange with transparency
+    };
 
     const matchAddress = (address) => {
       const cleaned = address?.replace(/\s+/g, '').trim() || '';
@@ -190,7 +282,7 @@
         const addr = f.properties.address || f.properties.name || '';
         const status = matchAddress(addr);
         f.properties.status = status;
-        f.properties.color = statusColor(status);
+        f.properties.color = statusColor(status, f.properties.OBJECTID);
         f.properties.id = i;
         f.properties.height = parseFloat(f.properties.height || f.properties.ground_height || 10);
       });
@@ -216,6 +308,27 @@
         paint: {
           'line-color': '#000',
           'line-width': 1.5
+        }
+      });
+
+      map.addLayer({
+        id: 'building-labels',
+        type: 'symbol',
+        source: 'buildings',
+        layout: {
+          'text-field': ['format',
+            ['get', 'STREET'], { 'font-scale': 0.8 },
+            '\n', {},
+            ['get', 'BLDG_NUM'], { 'font-scale': 0.8 }
+          ],
+          'text-font': ['Open Sans Regular'],
+          'text-size': 12,
+          'text-anchor': 'top'
+        },
+        paint: {
+          'text-color': '#ffffff',
+          'text-halo-color': '#000000',
+          'text-halo-width': 1
         }
       });
 
@@ -264,26 +377,172 @@
           { name: 'residents', value: p.residents || '—', bubble: false }
         ];
 
-        const html = `
-          <h2>${p.STREET || ''} ${p.BLDG_NUM || ''}</h2>
-          <div class="field-group">${headers.join('')}</div>
-          ${fields.map(f => `
-            <div class="info-card">
+        const itemsPerPage = 6;
+        let currentPage = 1;
+
+        function renderPopup() {
+          const start = (currentPage - 1) * itemsPerPage;
+          const end = start + itemsPerPage;
+          const paginatedFields = fields.slice(start, end);
+
+          const fieldsHtml = paginatedFields.map(f => `
+            <div class="card-field">
               <strong>${f.name}</strong>
               ${f.value}
               ${f.bubble ? '<div class="bubble">הערות אגף הנדסה</div>' : ''}
             </div>
-          `).join('')}
-          <iframe
-            id="streetview"
-            src="https://www.google.com/maps?q=&layer=c&cbll=${lat},${lng}&cbp=12,${map.getBearing()},0,0,0&output=svembed"
-            allowfullscreen
-          ></iframe>
-        `;
+          `).join('');
 
-        const sidePopup = document.getElementById('side-popup');
-        sidePopup.innerHTML = html;
-        sidePopup.style.display = 'block';
+          const totalPages = Math.ceil(fields.length / itemsPerPage);
+          const paginationHtml = `
+            <div class="pagination">
+              <button id="prev-page" ${currentPage === 1 ? 'disabled' : ''}>&laquo; קודם</button>
+              <span>עמוד ${currentPage} מתוך ${totalPages}</span>
+              <button id="next-page" ${currentPage === totalPages ? 'disabled' : ''}>הבא &raquo;</button>
+            </div>
+          `;
+
+          const geojsonHeadersHtml = `
+            <div class="geojson-headers">
+              <h3>GeoJSON Headers</h3>
+              <div class="card-body">
+                ${Object.keys(p).map(k => `<div class="card-field"><strong>${k}</strong>${p[k]}</div>`).join('')}
+              </div>
+            </div>
+          `;
+
+          const residentDataHtml = `<div class="resident-data"></div>`;
+
+          const searchHtml = `
+            <div class="card">
+              <div class="card-header">
+                <h2>חיפוש דיירים</h2>
+              </div>
+              <div class="card-body">
+                <input type="text" id="street-search" placeholder="רחוב" style="width: 100%; padding: 8px; margin-bottom: 10px;">
+                <input type="text" id="bldg-num-search" placeholder="מספר בית" style="width: 100%; padding: 8px; margin-bottom: 10px;">
+                <button id="search-residents" style="width: 100%; padding: 10px; background: #007bff; color: #fff; border: none; border-radius: 4px;">חיפוש</button>
+              </div>
+            </div>
+          `;
+
+          const html = `
+            ${searchHtml}
+            <div class="card">
+              <div class="card-header">
+                <h2>${p.STREET || ''} ${p.BLDG_NUM || ''}</h2>
+              </div>
+              <div class="card-body">
+                ${fieldsHtml}
+              </div>
+              ${paginationHtml}
+              <button id="toggle-geojson" style="margin-top: 10px;">הצג נתוני GeoJSON</button>
+              <button id="toggle-residents" style="margin-top: 10px;">הצג נתוני דיירים</button>
+              ${geojsonHeadersHtml}
+              ${residentDataHtml}
+            </div>
+            <iframe
+              id="streetview"
+              src="https://www.google.com/maps?q=&layer=c&cbll=${lat},${lng}&cbp=12,${map.getBearing()},0,0,0&output=svembed"
+              allowfullscreen
+            ></iframe>
+          `;
+
+          const sidePopup = document.getElementById('side-popup');
+          sidePopup.innerHTML = html;
+          sidePopup.style.display = 'block';
+
+          document.getElementById('prev-page').addEventListener('click', () => {
+            if (currentPage > 1) {
+              currentPage--;
+              renderPopup();
+            }
+          });
+
+          document.getElementById('next-page').addEventListener('click', () => {
+            if (currentPage < totalPages) {
+              currentPage++;
+              renderPopup();
+            }
+          });
+
+          document.getElementById('toggle-geojson').addEventListener('click', () => {
+            const geojsonHeaders = document.querySelector('.geojson-headers');
+            const button = document.getElementById('toggle-geojson');
+            if (geojsonHeaders.style.display === 'none' || geojsonHeaders.style.display === '') {
+              geojsonHeaders.style.display = 'block';
+              button.textContent = 'הסתר נתוני GeoJSON';
+            } else {
+              geojsonHeaders.style.display = 'none';
+              button.textContent = 'הצג נתוני GeoJSON';
+            }
+          });
+
+          document.getElementById('search-residents').addEventListener('click', () => {
+            const street = document.getElementById('street-search').value;
+            const bldgNum = document.getElementById('bldg-num-search').value;
+            const residentData = document.querySelector('.resident-data');
+            residentData.style.display = 'block';
+
+            fetch('residents.csv')
+              .then(response => response.text())
+              .then(csvText => {
+                  const parsed = Papa.parse(csvText, { header: false });
+                  const residents = parsed.data.filter(row => row[6] === street && row[7] == bldgNum);
+                  let residentCurrentPage = 1;
+                  const residentsPerPage = 5;
+
+                  function renderResidentTable() {
+                    const start = (residentCurrentPage - 1) * residentsPerPage;
+                    const end = start + residentsPerPage;
+                    const paginatedResidents = residents.slice(start, end);
+
+                    if (residents.length > 0) {
+                      let tableHtml = '<table class="resident-table"><thead><tr>';
+                      const headers = ['ID', 'שם פרטי', 'שם משפחה', 'גיל', 'טלפון 1', 'טלפון 2', 'רחוב', 'מספר בית', 'כתובת מלאה', 'דירה', 'עיר', 'פונו', 'תאריך פינוי', 'חזרו', 'מלון', 'הערות', 'מספר נפשות', 'שם מלא', 'סטטוס', 'הערות נוספות', 'חזר לבית', 'כתובת חלופית', 'הערות כלליות', 'טלפון נוסף', 'קרוב משפחה', 'טלפון קרוב משפחה', 'צרכים מיוחדים', 'קופ"ח', 'סניף', 'איש קשר', 'טלפון איש קשר', 'כתובת מגורים נוכחית'];
+                      headers.forEach(h => tableHtml += `<th>${h}</th>`);
+                      tableHtml += '</tr></thead><tbody>';
+                      paginatedResidents.forEach(resident => {
+                        tableHtml += '<tr>';
+                        resident.forEach(field => tableHtml += `<td>${field}</td>`);
+                        tableHtml += '</tr>';
+                      });
+                      tableHtml += '</tbody></table>';
+
+                      const totalPages = Math.ceil(residents.length / residentsPerPage);
+                      const paginationHtml = `
+                        <div class="pagination">
+                          <button id="prev-resident-page" ${residentCurrentPage === 1 ? 'disabled' : ''}>&laquo; קודם</button>
+                          <span>עמוד ${residentCurrentPage} מתוך ${totalPages}</span>
+                          <button id="next-resident-page" ${residentCurrentPage === totalPages ? 'disabled' : ''}>הבא &raquo;</button>
+                        </div>
+                      `;
+                      residentData.innerHTML = tableHtml + paginationHtml;
+
+                      document.getElementById('prev-resident-page').addEventListener('click', () => {
+                        if (residentCurrentPage > 1) {
+                          residentCurrentPage--;
+                          renderResidentTable();
+                        }
+                      });
+
+                      document.getElementById('next-resident-page').addEventListener('click', () => {
+                        if (residentCurrentPagen < totalPages) {
+                          residentCurrentPage++;
+                          renderResidentTable();
+                        }
+                      });
+
+                    } else {
+                      residentData.innerHTML = '<p>לא נמצאו דיירים התואמים את החיפוש.</p>';
+                    }
+                  }
+                  renderResidentTable();
+              });
+          });
+        }
+
+        renderPopup();
       });
 
       map.on('mouseenter', 'building-extrusion', () => map.getCanvas().style.cursor = 'pointer');
